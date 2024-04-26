@@ -108,7 +108,7 @@ func (mw *MutatingWebhook) MutatePod(ctx context.Context, pod *corev1.Pod, vault
 			MountPath: "/vault/",
 		},
 	}
-	if vaultConfig.TLSSecret != "" {
+	if vaultConfig.TLSSecret != "" || vaultConfig.TrustManagerTLSBundle != "" {
 		mountPath := "/vault/tls/"
 		volumeName := "vault-tls"
 		if hasTLSVolume(pod.Spec.Volumes) {
@@ -189,7 +189,12 @@ func (mw *MutatingWebhook) MutatePod(ctx context.Context, pod *corev1.Pod, vault
 		pod.Spec.InitContainers = append(getInitContainers(pod.Spec.Containers, pod.Spec.SecurityContext, vaultConfig, initContainersMutated, containersMutated, containerEnvVars, containerVolMounts), pod.Spec.InitContainers...)
 		mw.logger.Debug("Successfully appended pod init containers to spec")
 
-		pod.Spec.Volumes = append(pod.Spec.Volumes, mw.getVolumes(pod.Spec.Volumes, agentConfigMapName, vaultConfig)...)
+		volumes, err := mw.getVolumes(ctx, pod.Spec.Volumes, agentConfigMapName, vaultConfig)
+		if err != nil {
+			return errors.WrapIf(err, "failed to create pod volumes")
+		}
+
+		pod.Spec.Volumes = append(pod.Spec.Volumes, volumes...)
 		mw.logger.Debug("Successfully appended pod spec volumes")
 	}
 
@@ -405,7 +410,7 @@ func (mw *MutatingWebhook) mutateContainers(ctx context.Context, containers []co
 			}...)
 		}
 
-		if vaultConfig.TLSSecret != "" {
+		if vaultConfig.TLSSecret != "" || vaultConfig.TrustManagerTLSBundle != "" {
 			mountPath := "/vault/tls/"
 			volumeName := "vault-tls"
 			if hasTLSVolume(podSpec.Volumes) {
@@ -494,7 +499,7 @@ func (mw *MutatingWebhook) addAgentSecretsVolToContainers(vaultConfig VaultConfi
 	}
 }
 
-func (mw *MutatingWebhook) getVolumes(existingVolumes []corev1.Volume, agentConfigMapName string, vaultConfig VaultConfig) []corev1.Volume {
+func (mw *MutatingWebhook) getVolumes(ctx context.Context, existingVolumes []corev1.Volume, agentConfigMapName string, vaultConfig VaultConfig) ([]corev1.Volume, error) {
 	mw.logger.Debug("Add generic volumes to podspec")
 
 	volumes := []corev1.Volume{
@@ -549,6 +554,40 @@ func (mw *MutatingWebhook) getVolumes(existingVolumes []corev1.Volume, agentConf
 			},
 		})
 	}
+
+	if vaultConfig.TrustManagerTLSBundle != "" {
+		mw.logger.Debug("Add vault TLS volume from trust-manager to podspec")
+
+		volumeName := "vault-tls"
+		if hasTLSVolume(existingVolumes) {
+			volumeName = "vault-env-tls"
+		}
+
+		bundle, err := mw.getTrustManagerBundle(ctx, vaultConfig.TrustManagerTLSBundle)
+		if err != nil {
+			return nil, err
+		}
+
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{{
+						ConfigMap: &corev1.ConfigMapProjection{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: bundle.Name,
+							},
+							Items: []corev1.KeyToPath{{
+								Key:  bundle.Spec.Target.ConfigMap.Key,
+								Path: "ca.crt",
+							}},
+						},
+					}},
+				},
+			},
+		})
+	}
+
 	if vaultConfig.CtConfigMap != "" {
 		mw.logger.Debug("Add consul template volumes to podspec")
 
@@ -613,7 +652,7 @@ func (mw *MutatingWebhook) getVolumes(existingVolumes []corev1.Volume, agentConf
 			})
 	}
 
-	return volumes
+	return volumes, nil
 }
 
 // If the original Pod contained a Volume "vault-tls", for example Vault instances provisioned by the Operator

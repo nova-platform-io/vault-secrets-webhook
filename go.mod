@@ -6,6 +6,7 @@ require (
 	emperror.dev/errors v0.8.1
 	github.com/bank-vaults/internal v0.3.0
 	github.com/bank-vaults/vault-sdk v0.9.3
+	github.com/cert-manager/trust-manager v0.10.0
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/google/go-cmp v0.6.0
 	github.com/google/go-containerregistry v0.19.1

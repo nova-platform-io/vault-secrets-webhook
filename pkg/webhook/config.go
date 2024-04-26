@@ -35,6 +35,7 @@ type VaultConfig struct {
 	Path                          string
 	SkipVerify                    bool
 	TLSSecret                     string
+	TrustManagerTLSBundle         string
 	ClientTimeout                 time.Duration
 	UseAgent                      bool
 	VaultEnvDaemon                bool
@@ -154,6 +155,12 @@ func parseVaultConfig(obj metav1.Object, ar *model.AdmissionReview) VaultConfig 
 		vaultConfig.TLSSecret = val
 	} else {
 		vaultConfig.TLSSecret = viper.GetString("vault_tls_secret")
+	}
+
+	if val, ok := annotations[common.VaultTrustManagerTLSBundle]; ok {
+		vaultConfig.TrustManagerTLSBundle = val
+	} else {
+		vaultConfig.TrustManagerTLSBundle = viper.GetString("trust_manager_tls_bundle")
 	}
 
 	if val, ok := annotations[common.VaultClientTimeoutAnnotation]; ok {
@@ -477,6 +484,7 @@ func SetConfigDefaults() {
 	viper.SetDefault("vault_auth_method", "jwt")
 	viper.SetDefault("vault_role", "")
 	viper.SetDefault("vault_tls_secret", "")
+	viper.SetDefault("trust_manager_ca_bundle", "")
 	viper.SetDefault("vault_client_timeout", "10s")
 	viper.SetDefault("vault_agent", "false")
 	viper.SetDefault("vault_env_daemon", "false")

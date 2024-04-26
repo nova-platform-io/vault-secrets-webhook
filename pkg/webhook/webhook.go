@@ -17,6 +17,7 @@ package webhook
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"emperror.dev/errors"
 	injector "github.com/bank-vaults/internal/pkg/vaultinjector"
 	"github.com/bank-vaults/vault-sdk/vault"
+	trustapi "github.com/cert-manager/trust-manager/pkg/apis/trust/v1alpha1"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/slok/kubewebhook/v2/pkg/log"
 	"github.com/slok/kubewebhook/v2/pkg/model"
@@ -228,6 +230,33 @@ func (mw *MutatingWebhook) newVaultClient(vaultConfig VaultConfig) (*vault.Clien
 		clientTLSConfig.RootCAs = pool
 	}
 
+	if vaultConfig.TrustManagerTLSBundle != "" {
+		tlsConfigMap, err := mw.k8sClient.CoreV1().ConfigMaps(mw.namespace).Get(
+			context.Background(),
+			vaultConfig.TrustManagerTLSBundle,
+			metav1.GetOptions{},
+		)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to read Vault TLS ConfigMap")
+		}
+
+		bundle, err := mw.getTrustManagerBundle(context.Background(), vaultConfig.TrustManagerTLSBundle)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to read trust-manager bundle")
+		}
+
+		clientTLSConfig := clientConfig.HttpClient.Transport.(*http.Transport).TLSClientConfig
+
+		pool := x509.NewCertPool()
+
+		ok := pool.AppendCertsFromPEM(tlsConfigMap.BinaryData[bundle.Spec.Target.ConfigMap.Key])
+		if !ok {
+			return nil, errors.Errorf("error loading Vault CA PEM from TLS ConfigMap: %s", tlsConfigMap.Name)
+		}
+
+		clientTLSConfig.RootCAs = pool
+	}
+
 	if vaultConfig.VaultServiceAccount != "" {
 		sa, err := mw.k8sClient.CoreV1().ServiceAccounts(vaultConfig.ObjectNamespace).Get(context.Background(), vaultConfig.VaultServiceAccount, metav1.GetOptions{})
 		if err != nil {
@@ -283,6 +312,41 @@ func (mw *MutatingWebhook) newVaultClient(vaultConfig VaultConfig) (*vault.Clien
 		vault.ClientLogger(&clientLogger{logger: mw.logger}),
 		vault.VaultNamespace(vaultConfig.VaultNamespace),
 	)
+}
+
+func (mw *MutatingWebhook) getTrustManagerBundle(ctx context.Context, bundleName string) (*trustapi.Bundle, error) {
+	clientset, ok := mw.k8sClient.(*kubernetes.Clientset)
+	if !ok {
+		return nil, fmt.Errorf(
+			"expected kubernetes client to be of type *kubernetes.Clientset, got %T",
+			mw.k8sClient,
+		)
+	}
+
+	result, err := clientset.
+		RESTClient().
+		Get().
+		AbsPath(
+			"apis",
+			trustapi.SchemeGroupVersion.Group,
+			trustapi.SchemeGroupVersion.Version,
+			"bundles",
+			bundleName,
+		).
+		DoRaw(ctx)
+
+	if err != nil {
+		return nil, fmt.Errorf("error getting trust-manager bundle: %w", err)
+	}
+
+	bundle := &trustapi.Bundle{}
+
+	err = json.Unmarshal(result, bundle)
+	if err != nil {
+		return nil, fmt.Errorf("error decoding trust-manager bundle: %w", err)
+	}
+
+	return bundle, nil
 }
 
 func (mw *MutatingWebhook) ServeMetrics(addr string, handler http.Handler) {
